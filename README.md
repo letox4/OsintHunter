@@ -2,7 +2,7 @@
 
 <img src="docs/banner.svg" alt="OsintHunter" width="100%">
 
-**🇬🇧 English** · [🇪🇸 Español](README.es.md)
+**🇬🇧 English** · [🇪🇸 Español](README.es.md) · [🇯🇵 日本語](README.ja.md)
 
 <br>
 
