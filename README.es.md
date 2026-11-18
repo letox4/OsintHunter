@@ -52,7 +52,15 @@ ${\color{#ff7a1a}\textsf{De\ un\ solo\ dato\ a\ un\ perfil\ completo,\ con\ prue
 | 🗺️ **Mapa y línea de tiempo** | Geocodifica ubicaciones y ordena cronológicamente creaciones de cuentas, commits, filtraciones y archivos. |
 | 📄 **Informe** | Exporta el caso a HTML/PDF listo para entregar. |
 | 🤖 **IA opcional** | Resumen y análisis del caso con Ollama local o un proveedor compatible con OpenAI. |
-| 🔒 **Todo local** | Una sola `.exe`, base de datos SQLite a su lado, nada sale de tu equipo salvo las consultas a las fuentes. |
+| ⌨️ **Flujo rápido** | Paleta de comandos `Ctrl+K`, atajos con `?`, barra de progreso con cancelación en vivo y **Deshacer** al borrar. |
+| 🔒 **Todo local y endurecido** | Una sola `.exe`, base de datos SQLite a su lado. Claves API cifradas (Administrador de credenciales de Windows / DPAPI) y protección contra DNS rebinding y CSRF. |
+
+## 🆕 Novedades en v1.1
+
+- **Seguridad y privacidad:** Validación de `Host` contra DNS rebinding, token CSRF por sesión, validación de `ai_base_url` y cifrado de claves API en el Administrador de credenciales de Windows (`keyring`) / DPAPI con migración automática.
+- **Control del escaneo:** Barra de progreso en tiempo real con tiempo estimado y botón **Cancelar** que conserva los hallazgos parciales.
+- **UX y navegación:** Paleta de comandos `Ctrl+K`, modal de atajos `?`, notificaciones apilables con **Deshacer** (5 s) al eliminar nodos, detalles en secciones plegables con medidor visual de confianza, pantalla de bienvenida y estados vacíos con guía.
+- **Rendimiento y robustez:** Migraciones versionadas en SQLite, escrituras por lotes, consultas puntuales al pivotar y validación estricta al importar casos.
 
 ## 📸 Capturas
 
@@ -153,7 +161,7 @@ OsintHunter **funciona sin ninguna clave**. Si añades alguna en *Ajustes*, se a
 ## 🔒 Privacidad
 
 - Todo se ejecuta en **tu equipo** (`127.0.0.1`); no hay servidores intermedios ni telemetría.
-- Los casos, ajustes y claves se guardan en `data/`, que está excluido del repositorio.
+- Los casos y ajustes se guardan en `data/` (excluido del repositorio), y las claves de API se almacenan cifradas en el Administrador de credenciales de Windows / DPAPI.
 
 ## ⚖️ Uso responsable
 

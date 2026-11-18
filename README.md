@@ -51,7 +51,15 @@ ${\color{#ff7a1a}\textsf{From\ a\ single\ clue\ to\ a\ full\ profile,\ with\ evi
 | 🗺️ **Map & timeline** | Geocodes locations and orders account creations, commits, breaches and archives chronologically. |
 | 📄 **Report** | Exports the case to HTML/PDF, ready to hand over. |
 | 🤖 **Optional AI** | Case summary and analysis with local Ollama or any OpenAI-compatible provider. |
-| 🔒 **Fully local** | A single `.exe` with a SQLite database next to it. Nothing leaves your machine except the queries to the sources. |
+| ⌨️ **Fast workflow** | `Ctrl+K` command palette, `?` shortcuts, live progress bar with scan cancellation, and **Undo** on deletions. |
+| 🔒 **Fully local & hardened** | A single `.exe` with a SQLite database next to it. API keys are encrypted (Windows Credential Manager / DPAPI), with DNS-rebinding & CSRF protection. |
+
+## 🆕 What's new in v1.1
+
+- **Security & privacy:** `Host` header validation against DNS rebinding, per-session CSRF token, `ai_base_url` validation, and encrypted API key storage via Windows Credential Manager (`keyring`) / DPAPI with automatic migration.
+- **Scan control:** Real-time progress bar with ETA and a **Cancel** button that preserves partial findings.
+- **UX & navigation:** `Ctrl+K` command palette, `?` keyboard shortcuts modal, stackable toasts with 5-second **Undo** for entity deletions, collapsible detail sections with a visual confidence meter, onboarding welcome screen, and helpful empty states.
+- **Performance & reliability:** Versioned SQLite migrations, batched writes, targeted queries during pivoting, and strict `/api/import` validation.
 
 ## 📸 Screenshots
 
@@ -152,7 +160,7 @@ OsintHunter **works without any key**. Add some in *Settings* to unlock more sou
 ## 🔒 Privacy
 
 - Everything runs on **your machine** (`127.0.0.1`): no middle servers, no telemetry.
-- Cases, settings and keys are stored in `data/`, which is excluded from the repository.
+- Cases and settings are stored in `data/` (excluded from the repository), and API keys are stored encrypted in Windows Credential Manager / DPAPI.
 
 ## ⚖️ Responsible use
 

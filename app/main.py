@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import __version__
 from .analysis import score_identities
 from .config import WEB_DIR, settings
 from .db import db
@@ -42,7 +43,7 @@ async def lifespan(_app: FastAPI):
     await engine.stop()
 
 
-app = FastAPI(title="OsintHunter", lifespan=lifespan)
+app = FastAPI(title="OsintHunter", version=__version__, lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"], www_redirect=False)
 
 
