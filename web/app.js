@@ -69,22 +69,76 @@ const S = {
   layout: { groups: [], collapsed: [] },
   fold: new Map(), // nodo plegado -> nº de nodos escondidos
   hiddenBy: new Map(), // nodo escondido -> nodo o burbuja que lo representa
+  progress: { done: 0, total: 0, startedAt: 0 },
+  loadingCase: false,
+  pendingDelete: null,
 };
 let cy = null;
 
 // ---------------------------------------------------------------- utilidades UI
-let toastTimer;
-function toast(msg, isErr = false) {
-  const t = $("#toast");
-  t.textContent = msg;
-  t.className = "toast show" + (isErr ? " err" : "");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.className = "toast"), 3500);
+const TOAST_ICONS = { ok: "✔", err: "✖", info: "●" };
+function toast(msg, opts = false) {
+  const isObj = opts && typeof opts === "object";
+  const type = isObj ? (opts.type || "ok") : (opts ? "err" : "ok");
+  const duration = isObj && opts.duration ? opts.duration : 3800;
+  const stack = $("#toastStack");
+  if (!stack) {
+    const t = $("#toast");
+    t.textContent = msg;
+    t.className = "toast show" + (type === "err" ? " err" : "");
+    return;
+  }
+  const el = document.createElement("div");
+  el.className = `toast-item ${type}`;
+  const icon = document.createElement("span");
+  icon.className = "toast-icon";
+  icon.textContent = TOAST_ICONS[type] || "●";
+  const text = document.createElement("span");
+  text.textContent = msg;
+  el.append(icon, text);
+
+  let closed = false;
+  const remove = () => {
+    if (closed) return;
+    closed = true;
+    el.remove();
+  };
+
+  if (isObj && opts.actionText && typeof opts.onAction === "function") {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "toast-undo";
+    btn.textContent = opts.actionText;
+    btn.addEventListener("click", () => {
+      remove();
+      opts.onAction();
+    });
+    el.append(btn);
+    const bar = document.createElement("div");
+    bar.className = "toast-timer";
+    bar.style.width = "100%";
+    bar.style.transitionDuration = `${duration}ms`;
+    el.append(bar);
+    requestAnimationFrame(() => requestAnimationFrame(() => { bar.style.width = "0%"; }));
+  }
+
+  stack.append(el);
+  while (stack.children.length > 5) stack.firstElementChild.remove();
+  const timer = setTimeout(remove, duration);
+  return { remove: () => { clearTimeout(timer); remove(); } };
 }
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 const typeInfo = (t) => S.types[t] || { label: t, color: "#999", shape: "ellipse" };
 const badge = (t) => `<span class="badge" style="background:${typeInfo(t).color}">${esc(typeInfo(t).label)}</span>`;
 const short = (s, n = 30) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+
+function skeletonHtml(blocks = 3) {
+  return `<div class="skeleton">
+    <div class="sk-box sk-title"></div>
+    <div class="sk-box sk-sub"></div>
+    ${Array.from({ length: blocks }, () => `<div class="sk-box sk-block"></div>`).join("")}
+  </div>`;
+}
 
 // ---------------------------------------------------------------- grafo
 function initGraph() {
@@ -234,6 +288,53 @@ function runLayout(fit, randomize = false) {
 }
 const scheduleLayout = debounce(() => runLayout(), 700);
 
+function renderEmptyState() {
+  const box = $("#emptyState");
+  if (!box) return;
+  const hasEntities = S.entities.size > 0 || S.loadingCase;
+  box.classList.toggle("hidden", hasEntities);
+  if (hasEntities) return;
+
+  if (!S.cases.length) {
+    box.innerHTML = `
+      <div class="empty-box">
+        <img class="empty-logo" src="favicon.svg" alt="">
+        <h2>Bienvenido a OsintHunter</h2>
+        <p>Investigación OSINT de escritorio 100 % local. Correlaciona alias, emails, teléfonos, nombres, RUT, patentes, dominios, IPs y carteras cripto en un grafo interactivo con confianza explicable.</p>
+        <div class="small muted">Prueba con un ejemplo o escribe tu objetivo a la izquierda:</div>
+        <div class="example-chips">
+          <button type="button" class="example-chip" data-example="torvalds">👤 torvalds</button>
+          <button type="button" class="example-chip" data-example="nic.cl">🌐 nic.cl</button>
+          <button type="button" class="example-chip" data-example="1.1.1.1">🖧 1.1.1.1</button>
+        </div>
+        <div class="empty-actions">
+          <button type="button" class="primary small" data-empty-act="focus-search">Empezar investigación</button>
+          <button type="button" class="ghost small" data-empty-act="import-case">Importar caso JSON</button>
+        </div>
+        <div class="welcome-notice">
+          <b>Uso responsable:</b> OsintHunter consulta únicamente fuentes públicas abiertas desde tu propio equipo. Úsalo con fines legítimos (auditoría propia, seguridad autorizada, periodismo o investigación académica).
+        </div>
+      </div>`;
+  } else {
+    box.innerHTML = `
+      <div class="empty-box">
+        <img class="empty-logo" src="favicon.svg" alt="">
+        <h2>Empieza la cacería</h2>
+        <p>Escribe un usuario, email, teléfono, nombre completo, RUT, patente, dominio, IP, URL, hash o cartera de criptomonedas. El tipo se detecta solo.</p>
+        <p class="muted small">Haz clic en un nodo para ver sus datos, doble clic para investigarlo, y pulsa <kbd class="kbd">Ctrl+K</kbd> para abrir la paleta de comandos.</p>
+        <div class="example-chips">
+          <button type="button" class="example-chip" data-example="torvalds">👤 torvalds</button>
+          <button type="button" class="example-chip" data-example="nic.cl">🌐 nic.cl</button>
+          <button type="button" class="example-chip" data-example="1.1.1.1">🖧 1.1.1.1</button>
+        </div>
+        <div class="empty-actions">
+          <button type="button" class="primary small" data-empty-act="focus-search">Nueva búsqueda (/)</button>
+          <button type="button" class="ghost small" data-empty-act="upload-image">Analizar imagen (EXIF / GPS)</button>
+        </div>
+      </div>`;
+  }
+}
+
 function renderLegend() {
   const counts = {};
   for (const e of S.entities.values()) counts[e.type] = (counts[e.type] || 0) + 1;
@@ -241,7 +342,7 @@ function renderLegend() {
     .sort((a, b) => b[1] - a[1])
     .map(([t, n]) => `<span class="chip ${S.hidden.has(t) ? "off" : ""}" data-type="${esc(t)}"><span class="dot" style="background:${typeInfo(t).color}"></span><span>${esc(typeInfo(t).label)}</span> ${n}</span>`)
     .join("");
-  $("#emptyState").classList.toggle("hidden", S.entities.size > 0);
+  renderEmptyState();
 }
 const renderLegendSoon = debounce(renderLegend, 200);
 
@@ -252,6 +353,26 @@ $("#legend").addEventListener("click", (ev) => {
   S.hidden.has(t) ? S.hidden.delete(t) : S.hidden.add(t);
   cy.nodes().filter((n) => n.data("etype") === t).toggleClass("type-hidden", S.hidden.has(t));
   renderLegend();
+});
+
+document.addEventListener("click", (ev) => {
+  const ex = ev.target.closest("[data-example]")?.dataset.example;
+  if (ex) {
+    const inp = $("#searchInput");
+    inp.value = ex;
+    inp.focus();
+    detectSoon();
+    return;
+  }
+  const act = ev.target.closest("[data-empty-act]")?.dataset.emptyAct;
+  if (!act) return;
+  if (act === "focus-search") {
+    $("#searchInput").focus();
+  } else if (act === "upload-image") {
+    $("#imageInput").click();
+  } else if (act === "import-case") {
+    $("#importFile").click();
+  }
 });
 
 // ---------------------------------------------------------------- casos
@@ -266,6 +387,7 @@ async function loadCases(selectId) {
 }
 
 async function openCase(id) {
+  await flushPendingDelete();
   S.caseId = id ? Number(id) : null;
   localStorage.setItem("osint-case", S.caseId ?? "");
   cy.elements().remove();
@@ -273,17 +395,31 @@ async function openCase(id) {
   S.layout = { groups: [], collapsed: [] };
   firstLayout = true;
   mapFitted = false;
+  if (!S.caseId) {
+    S.loadingCase = false;
+    renderDetails();
+    renderAll();
+    return;
+  }
+  S.loadingCase = true;
+  renderEmptyState();
+  $("#details").innerHTML = skeletonHtml(3);
+  $("#sourcesList").innerHTML = skeletonHtml(2);
+  if (S.tab === "list") $("#entityTable").innerHTML = `<tbody><tr><td colspan="5">${skeletonHtml(2)}</td></tr></tbody>`;
+  try {
+    const data = await api(`/api/cases/${S.caseId}`);
+    $("#caseSelect").value = String(S.caseId);
+    $("#notesArea").value = data.case.notes || "";
+    S.layout = { groups: [], collapsed: [], ...(data.case.layout || {}) };
+    S.fold = new Map();
+    S.hiddenBy = new Map();
+    data.entities.forEach((e) => upsertNode(e));
+    data.edges.forEach(addEdge);
+    S.runs = data.runs;
+  } finally {
+    S.loadingCase = false;
+  }
   renderDetails();
-  if (!S.caseId) { renderAll(); return; }
-  const data = await api(`/api/cases/${S.caseId}`);
-  $("#caseSelect").value = String(S.caseId);
-  $("#notesArea").value = data.case.notes || "";
-  S.layout = { groups: [], collapsed: [], ...(data.case.layout || {}) };
-  S.fold = new Map();
-  S.hiddenBy = new Map();
-  data.entities.forEach((e) => upsertNode(e));
-  data.edges.forEach(addEdge);
-  S.runs = data.runs;
   applyGrouping();
   renderAll();
   runLayout(true, true);
@@ -346,6 +482,7 @@ $("#renameCaseBtn").addEventListener("click", async () => {
 });
 $("#deleteCaseBtn").addEventListener("click", async () => {
   if (!S.caseId) return;
+  await flushPendingDelete();
   const cur = S.cases.find((c) => c.id === S.caseId);
   if (!confirm(`¿Eliminar el caso «${cur?.name}» y todos sus datos?`)) return;
   await api(`/api/cases/${S.caseId}`, { method: "DELETE" });
@@ -373,6 +510,8 @@ $("#searchForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const value = $("#searchInput").value.trim();
   if (!value) return;
+  const submitBtn = $("#searchForm button[type=submit]");
+  if (submitBtn) submitBtn.disabled = true;
   try {
     await ensureCase(value);
     const ent = await api(`/api/cases/${S.caseId}/entities`, { method: "POST", body: { value, type: $("#typeSelect").value || null } });
@@ -384,7 +523,11 @@ $("#searchForm").addEventListener("submit", async (ev) => {
     $("#searchInput").value = "";
     fillTypeSelect(null);
     loadCases();
-  } catch (e) { toast(e.message, true); }
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
 });
 
 $("#imageInput").addEventListener("change", async (ev) => {
@@ -409,10 +552,25 @@ async function startScan(eid, modules, depth) {
 }
 
 function followJob(job_id) {
+  if (S.jobs.size === 0) {
+    S.progress = { done: 0, total: 0, startedAt: Date.now() };
+  }
   S.jobs.set(job_id, S.caseId);
+  const cancelBtn = $("#cancelJobBtn");
+  if (cancelBtn) cancelBtn.disabled = false;
   updateJobStatus();
   const es = new EventSource(`/api/jobs/${job_id}/events`);
-  const end = () => { es.close(); S.jobs.delete(job_id); updateJobStatus(); };
+  const end = () => {
+    es.close();
+    S.jobs.delete(job_id);
+    if (!S.jobs.size) {
+      S.running.clear();
+      if (cy) cy.nodes(".scanning").removeClass("scanning");
+      renderSourcesSoon();
+      refreshViewSoon();
+    }
+    updateJobStatus();
+  };
   es.onmessage = (m) => {
     const ev = JSON.parse(m.data);
     if (S.jobs.get(job_id) === S.caseId) handleEvent(ev);
@@ -421,33 +579,65 @@ function followJob(job_id) {
       toast(ev.analysis ? "Análisis del caso terminado"
         : `Investigación terminada (${ev.scanned} ${ev.scanned === 1 ? "entidad analizada" : "entidades analizadas"})`);
       loadCases();
+    } else if (ev.type === "cancelled") {
+      end();
+      toast("Investigación cancelada", { type: "info" });
+      loadCases();
+    } else if (ev.type === "error") {
+      end();
+      toast("Error: " + ev.message, true);
     }
-    if (ev.type === "error") { end(); toast("Error: " + ev.message, true); }
   };
   es.onerror = end;
 }
+
+async function cancelActiveJobs() {
+  const ids = [...S.jobs.keys()];
+  if (!ids.length) return;
+  const cancelBtn = $("#cancelJobBtn");
+  if (cancelBtn) cancelBtn.disabled = true;
+  await Promise.all(ids.map((jid) => api(`/api/jobs/${jid}/cancel`, { method: "POST" }).catch(() => {})));
+}
+$("#cancelJobBtn")?.addEventListener("click", cancelActiveJobs);
 
 $("#readBtn").addEventListener("click", async () => {
   if (!S.caseId) return;
   try {
     const { job_id } = await api(`/api/cases/${S.caseId}/read-accounts`, { method: "POST" });
-    toast("Leyendo la página pública de cada cuenta sin datos…");
+    toast("Leyendo la página pública de cada cuenta sin datos…", { type: "info" });
     followJob(job_id);
   } catch (e) { toast(e.message, true); }
 });
 
 $("#aiBtn").addEventListener("click", async () => {
-  if (!S.caseId || !S.entities.size) return toast("Primero investiga algo");
-  if (!S.meta.ai_ready) { toast("Configura un proveedor de IA en Ajustes (Ollama local, Groq o Gemini son gratis)"); return openSettings(); }
+  if (!S.caseId || !S.entities.size) return toast("Primero investiga algo", { type: "info" });
+  if (!S.meta.ai_ready) { toast("Configura un proveedor de IA en Ajustes (Ollama local, Groq o Gemini son gratis)", { type: "info" }); return openSettings(); }
   try {
     const { job_id } = await api(`/api/cases/${S.caseId}/analyze`, { method: "POST", body: { ai: true } });
-    toast("La IA está comparando las cuentas…");
+    toast("La IA está comparando las cuentas…", { type: "info" });
     followJob(job_id);
   } catch (e) { toast(e.message, true); }
 });
 
 function updateJobStatus() {
-  $("#jobStatus").innerHTML = S.jobs.size ? `<span class="st-running">● trabajando</span>` : "";
+  const active = S.jobs.size > 0;
+  $("#jobStatus").innerHTML = active ? `<span class="st-running">● trabajando</span>` : "";
+  const box = $("#scanProgress");
+  if (!box) return;
+  box.classList.toggle("hidden", !active);
+  if (!active) return;
+  const done = S.progress.done;
+  const total = Math.max(S.progress.total, done + S.running.size, 1);
+  const pct = Math.min(99, Math.round((done / total) * 100));
+  $("#scanProgText").textContent = `${done}/${total} (${pct}%)`;
+  $("#scanProgFill").style.width = `${pct}%`;
+  const elapsed = (Date.now() - (S.progress.startedAt || Date.now())) / 1000;
+  if (done >= 1 && total > done && elapsed > 0.8) {
+    const rem = Math.max(1, Math.round((elapsed / done) * (total - done)));
+    $("#scanProgEta").textContent = rem >= 90 ? `· ~${Math.ceil(rem / 60)} min` : `· ~${rem} s`;
+  } else {
+    $("#scanProgEta").textContent = "";
+  }
 }
 
 function handleEvent(ev) {
@@ -463,19 +653,32 @@ function handleEvent(ev) {
       addEdge(ev.edge);
       if (S.selected === ev.edge.src || S.selected === ev.edge.dst) renderDetailsSoon();
       break;
+    case "scan_plan":
+      S.progress.total += Number(ev.total) || 0;
+      updateJobStatus();
+      break;
     case "scan_entity":
       S.lastParent = ev.entity_id;
+      S.progress.total += (ev.modules || []).length;
       cy.getElementById(ev.entity_id).addClass("scanning");
+      updateJobStatus();
       break;
     case "run_start":
       S.running.set(`${ev.entity_id}|${ev.module}`, true);
+      if (S.progress.done + S.running.size > S.progress.total) {
+        S.progress.total = S.progress.done + S.running.size;
+      }
+      updateJobStatus();
       renderSourcesSoon();
       break;
     case "run": {
       const r = ev.run;
       S.running.delete(`${r.entity_id}|${r.module}`);
       S.runs.push(r);
+      S.progress.done += 1;
+      if (S.progress.done > S.progress.total) S.progress.total = S.progress.done;
       if (![...S.running.keys()].some((k) => k.startsWith(r.entity_id + "|"))) cy.getElementById(r.entity_id).removeClass("scanning");
+      updateJobStatus();
       renderSourcesSoon();
       if (S.selected === r.entity_id) renderDetailsSoon();
       if (r.module === "account_page") refreshViewSoon();
@@ -486,7 +689,8 @@ function handleEvent(ev) {
 
 // ---------------------------------------------------------------- panel de fuentes
 const STATUS = {
-  ok: ["✔", "st-ok"], empty: ["○", "st-empty"], skipped: ["!", "st-skipped"], error: ["✖", "st-error"], running: ["●", "st-running"],
+  ok: ["✔", "st-ok"], empty: ["○", "st-empty"], skipped: ["!", "st-skipped"],
+  cancelled: ["⊘", "st-skipped"], error: ["✖", "st-error"], running: ["●", "st-running"],
 };
 function renderSources() {
   const groups = new Map();
@@ -627,13 +831,17 @@ function renderDetails() {
   const rows = Object.entries(a).filter(([k, v]) => !k.startsWith("_") && !ANALYSIS_KEYS.has(k) && v !== null && v !== "")
     .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${fmtValue(v)}</td></tr>`).join("");
   const level = a["Nivel de confianza"];
-  const confBox = a.Confianza != null ? `<div class="section"><h4>¿Es la misma persona?</h4>
-      <div>Confianza <b>${esc(a.Confianza)}</b>/100 <span class="conf ${esc(level)}">${esc(level)}</span></div>
+  const confScore = Math.max(0, Math.min(100, Number(a.Confianza) || 0));
+  const confBox = (a.Confianza != null || a["IA: resumen"]) ? `<details class="det-sec" open>
+      <summary class="det-sec-title"><span>Señales de confianza</span></summary>
+      ${a.Confianza != null ? `<div class="conf-row"><span>Confianza <b>${esc(a.Confianza)}</b>/100</span><span class="conf ${esc(level)}">${esc(level)}</span></div>
+      <div class="conf-meter"><div class="conf-meter-fill ${esc(level)}" style="width:${Math.max(4, confScore)}%"></div></div>
       ${(a["Señales"] || []).length ? `<ul class="signals">${a["Señales"].map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : ""}
-      ${a["IA: veredicto"] ? `<div class="ai-box" style="margin-top:6px"><b>IA:</b> ${esc(a["IA: veredicto"])}${a["IA: motivo"] ? ` — ${esc(a["IA: motivo"])}` : ""}</div>` : ""}
-    </div>` : "";
-  const aiSummary = a["IA: resumen"] ? `<div class="section"><h4>Resumen de la IA</h4><div class="ai-box">${esc(a["IA: resumen"])}
-      ${a["IA: modelo"] ? `<div class="muted small" style="margin-top:4px">Modelo: ${esc(a["IA: modelo"])}</div>` : ""}</div></div>` : "";
+      ${a["IA: veredicto"] ? `<div class="ai-box" style="margin-top:6px"><b>IA:</b> ${esc(a["IA: veredicto"])}${a["IA: motivo"] ? ` — ${esc(a["IA: motivo"])}` : ""}</div>` : ""}` : ""}
+      ${a["IA: resumen"] ? `<div class="ai-box" style="margin-top:6px"><div class="small muted">Resumen de la IA</div>${esc(a["IA: resumen"])}
+        ${a["IA: modelo"] ? `<div class="muted small" style="margin-top:4px">Modelo: ${esc(a["IA: modelo"])}</div>` : ""}</div>` : ""}
+    </details>` : "";
+  const aiSummary = "";
   const reverse = avatar ? REVERSE_SEARCH.map(([name, base]) => link(base + encodeURIComponent(avatar), name)).join("") : "";
   const links = [...(a._links || [])];
   if (ent.type === "url" || ent.type === "account") links.unshift(["Abrir", ent.value]);
@@ -735,23 +943,27 @@ function renderDetails() {
     ${manualBox}
     ${aiSummary}
     ${confBox}
-    ${rows ? `<div class="section"><h4>Datos</h4><table class="attrs">${rows}</table></div>` : ""}
-    ${plainLinks.length ? `<div class="section"><h4>Enlaces</h4><div class="linklist">${plainLinks.map((l) => link(l[1], l[0])).join("")}</div></div>` : ""}
-    ${fillBox}
-    ${reverse ? `<div class="section"><h4>Buscar esta foto en otros sitios</h4><div class="linklist">${reverse}</div></div>` : ""}
+    ${rows ? `<details class="det-sec" open><summary class="det-sec-title"><span>Identidad y datos</span></summary><table class="attrs">${rows}</table></details>` : ""}
+    ${(plainLinks.length || fillBox || reverse) ? `<details class="det-sec" open><summary class="det-sec-title"><span>Enlaces</span></summary>
+      ${plainLinks.length ? `<div class="linklist">${plainLinks.map((l) => link(l[1], l[0])).join("")}</div>` : ""}
+      ${fillBox}
+      ${reverse ? `<div class="section"><h4>Buscar esta foto en otros sitios</h4><div class="linklist">${reverse}</div></div>` : ""}
+    </details>` : ""}
     ${(a._web || []).length ? renderWebHits(a._web, a._web_engine) : ""}
     ${(a._candidatos || []).length ? `<div class="section"><h4>Usuarios probables</h4>${a._candidatos.map((c) =>
       `<div class="cand"><span>${esc(c)}</span><button class="ghost small" data-cand="${esc(c)}">Investigar</button></div>`).join("")}</div>` : ""}
     ${(a._dorks || []).length ? `<div class="section"><h4>Dorks de búsqueda (${a._dorks.length})</h4>${renderDorks(a._dorks)}</div>` : ""}
-    ${conns.length ? `<div class="section"><h4>Conexiones (${conns.length})</h4>${conns.slice(0, 150).map(([dir, rel, o, e]) =>
+    ${conns.length ? `<details class="det-sec" open><summary class="det-sec-title"><span>Conexiones (${conns.length})</span></summary>${conns.slice(0, 150).map(([dir, rel, o, e]) =>
       `<div class="conn" data-goto="${esc(o.id)}">${dir} <span class="dot" style="background:${typeInfo(o.type).color}"></span>${esc(short(o.label, 44))} <span class="rel">${esc(rel)}</span>${e.source === "manual"
-        ? `<button class="ghost small unlink" title="Quitar este vínculo" data-unlink="${S.edges.indexOf(e)}">✕</button>` : ""}</div>`).join("")}</div>` : ""}
+        ? `<button class="ghost small unlink" title="Quitar este vínculo" data-unlink="${S.edges.indexOf(e)}">✕</button>` : ""}</div>`).join("")}</details>` : ""}
     ${linkBox(ent)}
-    ${latest.size ? `<div class="section"><h4>Fuentes consultadas</h4>${[...latest.values()].map((r) => {
-      const [icon, cls] = STATUS[r.status] || ["?", ""];
-      return `<div class="src"><span class="${cls}">${icon}</span><span>${esc(S.modules[r.module]?.title || r.module)}</span><span class="msg">${esc(r.message || "")}</span></div>`;
-    }).join("")}</div>` : ""}
-    ${(a._fuentes || []).length ? `<div class="section muted small">Datos aportados por: ${esc(a._fuentes.join(", "))}</div>` : ""}
+    ${(latest.size || (a._fuentes || []).length) ? `<details class="det-sec" open><summary class="det-sec-title"><span>Fuentes</span></summary>
+      ${latest.size ? [...latest.values()].map((r) => {
+        const [icon, cls] = STATUS[r.status] || ["?", ""];
+        return `<div class="src"><span class="${cls}">${icon}</span><span>${esc(S.modules[r.module]?.title || r.module)}</span><span class="msg">${esc(r.message || "")}</span></div>`;
+      }).join("") : ""}
+      ${(a._fuentes || []).length ? `<div class="muted small" style="margin-top:6px">Datos aportados por: ${esc(a._fuentes.join(", "))}</div>` : ""}
+    </details>` : ""}
   `;
 }
 const renderDetailsSoon = debounce(renderDetails, 200);
@@ -943,18 +1155,57 @@ function foundBy(startId, includeConfirmed = false) {
   return [...set];
 }
 
+async function flushPendingDelete() {
+  const pd = S.pendingDelete;
+  if (!pd) return;
+  S.pendingDelete = null;
+  clearTimeout(pd.timer);
+  pd.toastHandle?.remove();
+  try {
+    await api(`/api/cases/${pd.caseId}/entities/delete`, { method: "POST", body: { ids: pd.ids } });
+    loadCases();
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+window.addEventListener("beforeunload", () => {
+  if (S.pendingDelete) {
+    const pd = S.pendingDelete;
+    S.pendingDelete = null;
+    clearTimeout(pd.timer);
+    const token = getSessionToken();
+    fetch(`/api/cases/${pd.caseId}/entities/delete`, {
+      method: "POST",
+      keepalive: true,
+      headers: { "Content-Type": "application/json", ...(token ? { "X-Osint-Token": token } : {}) },
+      body: JSON.stringify({ ids: pd.ids }),
+    }).catch(() => {});
+  }
+});
+
 async function deleteMany(ids) {
   ids = [...new Set(ids)].filter((id) => S.entities.has(id));
-  if (!ids.length) return toast("No hay nada que eliminar");
+  if (!ids.length) return toast("No hay nada que eliminar", { type: "info" });
   const ents = ids.map((id) => S.entities.get(id));
   const roots = ents.filter((e) => e.root).length;
   const confirmed = ents.filter((e) => e.attrs?._verdict === "confirmada").length;
-  const warn = [roots && `${roots} objetivo(s) que buscaste`, confirmed && `${confirmed} confirmada(s) por ti`].filter(Boolean);
-  const msg = ids.length === 1 ? `¿Eliminar «${ents[0].label}» del caso?`
-    : `¿Eliminar ${ids.length} nodos del caso?` + (warn.length ? `\n\nIncluye ${warn.join(" y ")}.` : "");
-  if (!confirm(msg)) return;
-  const { deleted } = await api(`/api/cases/${S.caseId}/entities/delete`, { method: "POST", body: { ids } });
+  if (roots || confirmed) {
+    const warn = [roots && `${roots} objetivo(s) que buscaste`, confirmed && `${confirmed} confirmada(s) por ti`].filter(Boolean);
+    const msg = ids.length === 1 ? `¿Eliminar «${ents[0].label}» del caso?`
+      : `¿Eliminar ${ids.length} nodos del caso?` + (warn.length ? `\n\nIncluye ${warn.join(" y ")}.` : "");
+    if (!confirm(msg)) return;
+  }
+
+  await flushPendingDelete();
+
+  const caseId = S.caseId;
   const gone = new Set(ids);
+  const snapEntities = ents.map((e) => ({ ...e, pos: cy.getElementById(e.id).position() }));
+  const snapEdges = S.edges.filter((e) => gone.has(e.src) || gone.has(e.dst));
+  const snapRuns = S.runs.filter((r) => gone.has(r.entity_id));
+  const snapLayout = JSON.parse(JSON.stringify(S.layout));
+
   cy.batch(() => ids.forEach((id) => cy.getElementById(id).remove()));
   ids.forEach((id) => { S.entities.delete(id); S.listSel.delete(id); });
   S.edges = S.edges.filter((e) => !gone.has(e.src) && !gone.has(e.dst));
@@ -962,10 +1213,43 @@ async function deleteMany(ids) {
   S.layout.collapsed = S.layout.collapsed.filter((id) => !gone.has(id));
   applyGrouping();
   saveLayout();
-  select(null);
+  if (S.selected && gone.has(S.selected)) select(null);
+  else renderDetails();
   renderAll();
   updateSelBar();
-  toast(`${deleted} nodos eliminados`);
+
+  const undo = () => {
+    if (!S.pendingDelete || S.pendingDelete.caseId !== caseId) return;
+    clearTimeout(S.pendingDelete.timer);
+    S.pendingDelete = null;
+    if (S.caseId !== caseId) return;
+    S.layout = snapLayout;
+    for (const e of snapEntities) {
+      const { pos, ...entData } = e;
+      upsertNode(entData);
+      if (pos) cy.getElementById(entData.id).position(pos);
+    }
+    for (const ed of snapEdges) addEdge(ed);
+    S.runs.push(...snapRuns);
+    applyGrouping();
+    saveLayout();
+    renderAll();
+    toast("Borrado deshecho", { type: "ok" });
+  };
+
+  const pd = {
+    caseId,
+    ids,
+    timer: setTimeout(() => { flushPendingDelete(); }, 5000),
+    toastHandle: null,
+  };
+  S.pendingDelete = pd;
+  pd.toastHandle = toast(`${ids.length} nodos eliminados`, {
+    type: "info",
+    duration: 5000,
+    actionText: "Deshacer",
+    onAction: undo,
+  });
 }
 
 function updateSelBar() {
@@ -1503,7 +1787,17 @@ function timelineEvents() {
 function renderTimeline() {
   const evs = timelineEvents();
   if (!evs.length) {
-    $("#timeline").innerHTML = `<div class="muted" style="text-align:center;margin-top:40px">Aún no hay fechas en este caso (creación de cuentas, dominios, filtraciones, actividad…).</div>`;
+    $("#timeline").innerHTML = `
+      <div class="empty">
+        <div class="empty-box">
+          <h3>Cronología vacía</h3>
+          <p class="muted">Aún no hay fechas en este caso (creación de cuentas, dominios, filtraciones, actividad…).</p>
+          <p class="muted small">Investiga un usuario, email o dominio para extraer automáticamente fechas de registro, commits, certificados, capturas de Wayback y brechas.</p>
+          <div class="empty-actions">
+            <button type="button" class="ghost small" data-empty-act="focus-search">Ir a nueva búsqueda</button>
+          </div>
+        </div>
+      </div>`;
     return;
   }
   let year = null;
@@ -1784,6 +2078,8 @@ $("#keysList").addEventListener("click", (ev) => {
 });
 $("#saveSettingsBtn").addEventListener("click", async (ev) => {
   ev.preventDefault();
+  const btn = $("#saveSettingsBtn");
+  btn.disabled = true;
   const f = $("#settingsForm");
   const api_keys = {};
   f.querySelectorAll("input[data-key]").forEach((i) => {
@@ -1804,7 +2100,182 @@ $("#saveSettingsBtn").addEventListener("click", async (ev) => {
     await loadMeta();
     $("#settingsDlg").close();
     toast("Ajustes guardados");
-  } catch (e) { toast(e.message, true); }
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------- paleta de comandos (Ctrl+K) y atajos (?)
+let cmdItems = [];
+let cmdIndex = 0;
+
+function switchTab(tabName) {
+  const btn = document.querySelector(`.tab[data-tab="${tabName}"]`);
+  if (btn) btn.click();
+}
+
+function buildCommandItems(query) {
+  const q = query.trim().toLowerCase();
+  const items = [];
+
+  if (query.trim().length >= 2) {
+    const val = query.trim();
+    items.push({
+      label: `Investigar «${short(val, 42)}»`,
+      cat: "Búsqueda",
+      icon: "🔎",
+      run: () => {
+        $("#searchInput").value = val;
+        $("#searchForm").requestSubmit();
+      },
+    });
+  }
+
+  // Nodos del caso actual
+  const matchingNodes = [...S.entities.values()]
+    .filter((e) => !q || e.label.toLowerCase().includes(q) || e.value.toLowerCase().includes(q) || typeInfo(e.type).label.toLowerCase().includes(q))
+    .slice(0, q ? 12 : 5);
+  for (const e of matchingNodes) {
+    items.push({
+      label: `Ir a nodo: ${e.label}`,
+      cat: typeInfo(e.type).label,
+      badgeType: e.type,
+      run: () => {
+        if (S.tab !== "graph") switchTab("graph");
+        select(e.id, true);
+      },
+    });
+  }
+
+  // Comandos estáticos
+  const staticCmds = [
+    { label: "Vista: Grafo", cat: "Vista", kbd: "1", run: () => switchTab("graph") },
+    { label: "Vista: Lista", cat: "Vista", kbd: "2", run: () => switchTab("list") },
+    { label: "Vista: Mapa", cat: "Vista", kbd: "3", run: () => switchTab("map") },
+    { label: "Vista: Cronología", cat: "Vista", kbd: "4", run: () => switchTab("timeline") },
+    { label: "Vista: Notas", cat: "Vista", kbd: "5", run: () => switchTab("notes") },
+    { label: "Nuevo caso", cat: "Caso", run: () => $("#newCaseBtn").click() },
+    { label: "Importar caso JSON", cat: "Caso", run: () => $("#importBtn").click() },
+    { label: "Exportar caso (JSON)", cat: "Exportar", run: () => $("#exportBtn").click() },
+    { label: "Generar informe (HTML / PDF)", cat: "Exportar", run: () => $("#reportBtn").click() },
+    { label: "Descargar captura del grafo (PNG)", cat: "Exportar", run: () => $("#pngBtn").click() },
+    { label: "Verificar cuentas con IA", cat: "Análisis", run: () => $("#aiBtn").click() },
+    { label: "Encuadrar grafo", cat: "Grafo", kbd: "F", run: () => $("#fitBtn").click() },
+    { label: "Reordenar grafo", cat: "Grafo", run: () => $("#layoutBtn").click() },
+    { label: "Ajustes y claves API", cat: "Configuración", run: () => openSettings() },
+    { label: "Cambiar idioma (Español / English)", cat: "Configuración", run: () => $("#langBtn").click() },
+    { label: "Atajos de teclado", cat: "Ayuda", kbd: "?", run: () => $("#shortcutsDlg").showModal() },
+  ];
+  if (S.jobs.size) {
+    staticCmds.unshift({ label: "Cancelar escaneo activo", cat: "Escaneo", run: () => cancelActiveJobs() });
+  }
+  for (const c of staticCmds) {
+    const trLabel = I18N.tr(c.label).toLowerCase();
+    const trCat = I18N.tr(c.cat).toLowerCase();
+    if (!q || c.label.toLowerCase().includes(q) || trLabel.includes(q) || c.cat.toLowerCase().includes(q) || trCat.includes(q)) {
+      items.push(c);
+    }
+  }
+  return items;
+}
+
+function renderCommandList() {
+  const listEl = $("#cmdList");
+  if (!listEl) return;
+  cmdItems = buildCommandItems($("#cmdInput").value);
+  if (cmdIndex >= cmdItems.length) cmdIndex = Math.max(0, cmdItems.length - 1);
+  if (!cmdItems.length) {
+    listEl.innerHTML = `<div class="muted small" style="padding:10px">Sin comandos coincidentes.</div>`;
+    return;
+  }
+  listEl.innerHTML = cmdItems.map((it, i) => `
+    <div class="cmd-item ${i === cmdIndex ? "active" : ""}" data-cmd-idx="${i}">
+      <div class="cmd-item-left">
+        ${it.badgeType ? badge(it.badgeType) : `<span>${it.icon || "▸"}</span>`}
+        <span>${esc(it.label)}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span class="cmd-item-cat">${esc(it.cat)}</span>
+        ${it.kbd ? `<kbd class="kbd">${esc(it.kbd)}</kbd>` : ""}
+      </div>
+    </div>`).join("");
+  const activeEl = listEl.querySelector(".cmd-item.active");
+  if (activeEl) activeEl.scrollIntoView({ block: "nearest" });
+}
+
+function openCommandPalette() {
+  const dlg = $("#cmdDlg");
+  if (!dlg) return;
+  if (dlg.open) { dlg.close(); return; }
+  $("#cmdInput").value = "";
+  cmdIndex = 0;
+  renderCommandList();
+  dlg.showModal();
+  $("#cmdInput").focus();
+}
+
+$("#cmdBtn")?.addEventListener("click", openCommandPalette);
+$("#helpBtn")?.addEventListener("click", () => $("#shortcutsDlg")?.showModal());
+$("#cmdInput")?.addEventListener("input", () => { cmdIndex = 0; renderCommandList(); });
+$("#cmdInput")?.addEventListener("keydown", (ev) => {
+  if (ev.key === "ArrowDown") {
+    ev.preventDefault();
+    if (cmdItems.length) { cmdIndex = (cmdIndex + 1) % cmdItems.length; renderCommandList(); }
+  } else if (ev.key === "ArrowUp") {
+    ev.preventDefault();
+    if (cmdItems.length) { cmdIndex = (cmdIndex - 1 + cmdItems.length) % cmdItems.length; renderCommandList(); }
+  } else if (ev.key === "Enter") {
+    ev.preventDefault();
+    const picked = cmdItems[cmdIndex];
+    if (picked) {
+      $("#cmdDlg").close();
+      picked.run();
+    }
+  }
+});
+$("#cmdList")?.addEventListener("click", (ev) => {
+  const row = ev.target.closest("[data-cmd-idx]");
+  if (!row) return;
+  const picked = cmdItems[Number(row.dataset.cmdIdx)];
+  if (picked) {
+    $("#cmdDlg").close();
+    picked.run();
+  }
+});
+$("#cmdDlg")?.addEventListener("click", (ev) => {
+  if (ev.target === $("#cmdDlg")) $("#cmdDlg").close();
+});
+$("#shortcutsDlg")?.addEventListener("click", (ev) => {
+  if (ev.target === $("#shortcutsDlg")) $("#shortcutsDlg").close();
+});
+
+document.addEventListener("keydown", (ev) => {
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "k") {
+    ev.preventDefault();
+    openCommandPalette();
+    return;
+  }
+  const inField = ev.target.closest("input, textarea, select, [contenteditable]");
+  const inDialog = ev.target.closest("dialog") || document.querySelector("dialog[open]");
+  if (inField || inDialog || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (ev.key === "?") {
+    ev.preventDefault();
+    $("#shortcutsDlg")?.showModal();
+  } else if (ev.key === "/") {
+    ev.preventDefault();
+    $("#searchInput")?.focus();
+  } else if (ev.key.toLowerCase() === "f" && S.tab === "graph" && cy) {
+    ev.preventDefault();
+    cy.fit(undefined, 40);
+  } else if (["1", "2", "3", "4", "5"].includes(ev.key)) {
+    const tabs = ["graph", "list", "map", "timeline", "notes"];
+    switchTab(tabs[Number(ev.key) - 1]);
+  } else if (ev.key === "Escape" && S.tab === "graph" && cy) {
+    select(null);
+    updateSelBar();
+  }
 });
 
 // ---------------------------------------------------------------- arranque

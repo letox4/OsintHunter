@@ -19,10 +19,12 @@
     <button id="deleteCaseBtn" class="ghost icon danger" title="Eliminar caso">✕</button>
   </div>
   <div class="top-actions">
-    <button id="importBtn" class="ghost">Importar caso</button>
+    <button id="cmdBtn" class="ghost small" title="Paleta de comandos (Ctrl+K)">⌘ Ctrl+K</button>
+    <button id="helpBtn" class="ghost icon" title="Atajos de teclado (?)">?</button>
+    <button id="importBtn" class="ghost" title="Importar un caso desde un archivo JSON">Importar caso</button>
     <input type="file" id="importFile" accept=".json" hidden>
     <button id="langBtn" class="ghost" data-notr title="Idioma / Language"></button>
-    <button id="settingsBtn">Ajustes y claves API</button>
+    <button id="settingsBtn" title="Configurar opciones, IA y claves API">Ajustes y claves API</button>
   </div>
 </header>
 
@@ -46,7 +48,15 @@
       </label>
     </form>
     <div class="card sources">
-      <div class="card-title">Fuentes consultadas <span id="jobStatus"></span></div>
+      <div class="card-title"><span>Fuentes consultadas</span> <span id="jobStatus"></span></div>
+      <div id="scanProgress" class="scan-progress hidden">
+        <div class="scan-progress-top">
+          <span id="scanProgText" class="small">0/0 (0%)</span>
+          <span id="scanProgEta" class="muted small"></span>
+          <button id="cancelJobBtn" type="button" class="ghost small danger" title="Cancelar el escaneo activo">✕ Cancelar</button>
+        </div>
+        <div class="prog-track"><div id="scanProgFill" class="prog-fill" style="width:0%"></div></div>
+      </div>
       <div id="sourcesList" class="sources-list"><div class="muted small">Aún no hay consultas.</div></div>
     </div>
   </aside>
@@ -80,11 +90,11 @@
         <option value="expand">Desplegar todo</option>
         <option value="ungroup">Quitar todas las burbujas</option>
       </select>
-      <button id="fitBtn" class="ghost small">Encuadrar</button>
-      <button id="layoutBtn" class="ghost small">Reordenar</button>
+      <button id="fitBtn" class="ghost small" title="Ajustar el grafo a la pantalla (F)">Encuadrar</button>
+      <button id="layoutBtn" class="ghost small" title="Recalcular la disposición de los nodos">Reordenar</button>
       <button id="reportBtn" class="small" title="Informe del caso para imprimir o guardar como PDF">Informe</button>
-      <button id="pngBtn" class="ghost small">PNG</button>
-      <button id="exportBtn" class="ghost small">Exportar JSON</button>
+      <button id="pngBtn" class="ghost small" title="Descargar imagen PNG del grafo">PNG</button>
+      <button id="exportBtn" class="ghost small" title="Descargar el caso completo en formato JSON">Exportar JSON</button>
     </div>
     <div id="graphView" class="view">
       <div id="cy"></div>
@@ -111,7 +121,17 @@
     </div>
     <div id="mapView" class="view hidden">
       <div id="map"></div>
-      <div id="mapEmpty" class="empty"><p class="muted">Aún no hay ubicaciones con coordenadas en este caso.</p></div>
+      <div id="mapEmpty" class="empty">
+        <div class="empty-box">
+          <h3>Sin ubicaciones en el mapa</h3>
+          <p class="muted">Aún no hay ubicaciones con coordenadas en este caso.</p>
+          <p class="muted small">Las coordenadas se obtienen al investigar direcciones IP, ubicaciones de perfiles, fotos de Flickr o imágenes con metadatos GPS (EXIF).</p>
+          <div class="empty-actions">
+            <button type="button" class="ghost small" data-empty-act="focus-search">Ir a nueva búsqueda</button>
+            <button type="button" class="ghost small" data-empty-act="upload-image">Analizar imagen (EXIF / GPS)</button>
+          </div>
+        </div>
+      </div>
     </div>
     <div id="timelineView" class="view hidden">
       <div id="timeline" class="timeline"></div>
@@ -189,6 +209,37 @@
   </form>
 </dialog>
 
+<dialog id="cmdDlg" class="cmd-dlg">
+  <div class="cmd-head">
+    <span class="cmd-icon">⌘</span>
+    <input id="cmdInput" autocomplete="off" spellcheck="false" placeholder="Escribe un comando, busca un nodo o investiga un valor…">
+    <kbd class="kbd">Esc</kbd>
+  </div>
+  <div id="cmdList" class="cmd-list"></div>
+</dialog>
+
+<dialog id="shortcutsDlg" class="shortcuts-dlg">
+  <form method="dialog">
+    <h2>Atajos de teclado</h2>
+    <div class="shortcuts-grid">
+      <div class="sc-row"><kbd class="kbd">Ctrl + K</kbd><span>Abrir paleta de comandos</span></div>
+      <div class="sc-row"><kbd class="kbd">?</kbd><span>Mostrar atajos de teclado</span></div>
+      <div class="sc-row"><kbd class="kbd">/</kbd><span>Enfocar nueva búsqueda</span></div>
+      <div class="sc-row"><kbd class="kbd">1 – 5</kbd><span>Cambiar vista (Grafo, Lista, Mapa, Cronología, Notas)</span></div>
+      <div class="sc-row"><kbd class="kbd">F</kbd><span>Encuadrar el grafo en pantalla</span></div>
+      <div class="sc-row"><kbd class="kbd">Supr</kbd><span>Eliminar nodos seleccionados (con opción de deshacer)</span></div>
+      <div class="sc-row"><kbd class="kbd">Ctrl + clic</kbd><span>Sumar o quitar nodos de la selección</span></div>
+      <div class="sc-row"><kbd class="kbd">Shift + arrastrar</kbd><span>Seleccionar un área del grafo</span></div>
+      <div class="sc-row"><kbd class="kbd">Doble clic</kbd><span>Investigar nodo o plegar/desplegar burbuja</span></div>
+      <div class="sc-row"><kbd class="kbd">Esc</kbd><span>Cerrar diálogo o limpiar selección</span></div>
+    </div>
+    <div class="dlg-actions">
+      <button value="close" class="primary">Cerrar</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toastStack" class="toast-stack" aria-live="polite"></div>
 <div id="toast" class="toast"></div>
 
 <script src="vendor/cytoscape.min.js"></script>
