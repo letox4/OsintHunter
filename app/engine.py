@@ -102,12 +102,14 @@ class Context:
             return None
         attrs = dict(attrs or {})
         attrs["_fuentes"] = [self.module.title]
-        ent, created = db.upsert_entity(self.case_id, etype, str(value), attrs, pivot=pivot)
+        src = parent or self.entity["id"]
+        with db.batch():
+            ent, created = db.upsert_entity(self.case_id, etype, str(value), attrs, pivot=pivot)
+            edge_added = src != ent["id"] and db.add_edge(self.case_id, src, ent["id"], rel, self.module.name)
         self.job.emit({"type": "entity", "entity": ent, "created": created})
         if created:
             self.job.created.append(ent["id"])
-        src = parent or self.entity["id"]
-        if src != ent["id"] and db.add_edge(self.case_id, src, ent["id"], rel, self.module.name):
+        if edge_added:
             self.job.emit({"type": "edge", "edge": {"src": src, "dst": ent["id"], "label": rel, "source": self.module.name}})
         self.found += 1
         if pivot and etype in AUTO_PIVOT_TYPES:
@@ -177,9 +179,7 @@ class Engine:
         from . import analysis
 
         try:
-            graph = db.graph(job.case_id)
-            done = {r["entity_id"] for r in graph["runs"] if r["module"] == m.name and r["status"] in ("ok", "empty", "skipped")}
-            ents = [e for e in graph["entities"] if m.applies(e) and e["id"] not in done]
+            ents = [e for e in db.entities_without_run(job.case_id, m.name) if m.applies(e)]
             sem = asyncio.Semaphore(8)
 
             async def one(e):
@@ -273,11 +273,7 @@ class Engine:
         else:
             mods = [m for m in mods if not m.deep]
         if not rerun:
-            done = {
-                r["module"]
-                for r in db.graph(job.case_id)["runs"]
-                if r["entity_id"] == eid and r["status"] in ("ok", "empty")
-            }
+            done = db.completed_modules(job.case_id, eid, ("ok", "empty"))
             mods = [m for m in mods if m.name not in done]
         if not mods:
             return []

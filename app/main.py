@@ -318,23 +318,24 @@ async def upload_image(case_id: int, file: UploadFile = File(...)):
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, f"No se pudo leer la imagen: {e}") from e
     info["_fuentes"] = ["Metadatos EXIF"]
-    img, _ = db.upsert_entity(case_id, "image", info["SHA256"], info, root=True)
-    h, _ = db.upsert_entity(case_id, "hash", info["SHA256"], {"_fuentes": ["Metadatos EXIF"]})
-    db.add_edge(case_id, img["id"], h["id"], "sha256", "exif")
-    if "_lat" in info:
-        lat, lon = info["_lat"], info["_lon"]
-        loc, _ = db.upsert_entity(case_id, "location", f"{lat}, {lon}", {
-            "_lat": lat, "_lon": lon, "Precisión": "GPS de la foto",
-            "_links": [["Google Maps", f"https://www.google.com/maps?q={lat},{lon}"],
-                       ["OpenStreetMap", f"https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=17/{lat}/{lon}"]],
-            "_fuentes": ["Metadatos EXIF"],
-        }, pivot=False)
-        db.add_edge(case_id, img["id"], loc["id"], "tomada en", "exif")
-    for key, rel in (("Autor", "autor"), ("Propietario cámara", "propietario"), ("Autor (Windows)", "autor")):
-        if info.get(key) and len(info[key]) > 2:
-            p, _ = db.upsert_entity(case_id, "person", info[key], {"_fuentes": ["Metadatos EXIF"]}, pivot=False)
-            db.add_edge(case_id, img["id"], p["id"], rel, "exif")
-    db.touch(case_id)
+    with db.batch():
+        img, _ = db.upsert_entity(case_id, "image", info["SHA256"], info, root=True)
+        h, _ = db.upsert_entity(case_id, "hash", info["SHA256"], {"_fuentes": ["Metadatos EXIF"]})
+        db.add_edge(case_id, img["id"], h["id"], "sha256", "exif")
+        if "_lat" in info:
+            lat, lon = info["_lat"], info["_lon"]
+            loc, _ = db.upsert_entity(case_id, "location", f"{lat}, {lon}", {
+                "_lat": lat, "_lon": lon, "Precisión": "GPS de la foto",
+                "_links": [["Google Maps", f"https://www.google.com/maps?q={lat},{lon}"],
+                           ["OpenStreetMap", f"https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=17/{lat}/{lon}"]],
+                "_fuentes": ["Metadatos EXIF"],
+            }, pivot=False)
+            db.add_edge(case_id, img["id"], loc["id"], "tomada en", "exif")
+        for key, rel in (("Autor", "autor"), ("Propietario cámara", "propietario"), ("Autor (Windows)", "autor")):
+            if info.get(key) and len(info[key]) > 2:
+                p, _ = db.upsert_entity(case_id, "person", info[key], {"_fuentes": ["Metadatos EXIF"]}, pivot=False)
+                db.add_edge(case_id, img["id"], p["id"], rel, "exif")
+        db.touch(case_id)
     return {"entity": img}
 
 
@@ -350,23 +351,78 @@ def export_case(case_id: int):
     )
 
 
+MAX_IMPORT_BYTES = 25 * 1024 * 1024
+MAX_IMPORT_ITEMS = 50000
+
+
 @app.post("/api/import")
 async def import_case(file: UploadFile = File(...)):
+    raw = await file.read(MAX_IMPORT_BYTES + 1)
+    if len(raw) > MAX_IMPORT_BYTES:
+        raise HTTPException(413, "Archivo demasiado grande (máx. 25 MB)")
     try:
-        data = json.loads(await file.read())
-        src_case = data["case"]
-    except (ValueError, KeyError) as e:
-        raise HTTPException(400, "Archivo no válido") from e
-    case = db.create_case(src_case.get("name", "Importado") + " (importado)")
-    for e in data.get("entities", []):
-        db.upsert_entity(case["id"], e["type"], e["value"], e.get("attrs") or {}, root=e.get("root", False),
-                         pivot=e.get("pivot", True))
-    for ed in data.get("edges", []):
-        db.add_edge(case["id"], ed["src"], ed["dst"], ed["label"], ed.get("source", "import"))
-    if src_case.get("notes"):
-        db.update_case(case["id"], notes=src_case["notes"])
-    if isinstance(src_case.get("layout"), dict):
-        db.update_case(case["id"], layout=src_case["layout"])
+        data = json.loads(raw)
+    except ValueError as e:
+        raise HTTPException(400, "JSON no válido") from e
+    if not isinstance(data, dict) or not isinstance(data.get("case"), dict):
+        raise HTTPException(400, "Archivo de caso no válido")
+    src_case = data["case"]
+    raw_entities = data.get("entities", [])
+    raw_edges = data.get("edges", [])
+    if not isinstance(raw_entities, list) or not isinstance(raw_edges, list):
+        raise HTTPException(400, "Formato de entidades o aristas no válido")
+    if len(raw_entities) > MAX_IMPORT_ITEMS or len(raw_edges) > MAX_IMPORT_ITEMS:
+        raise HTTPException(400, f"El archivo supera el máximo de {MAX_IMPORT_ITEMS} elementos")
+
+    validated_entities: list[tuple[str, str, dict, bool, bool, str | None]] = []
+    for e in raw_entities:
+        if not isinstance(e, dict):
+            raise HTTPException(400, "Entidad mal formada en el archivo")
+        etype = e.get("type")
+        val = e.get("value")
+        attrs = e.get("attrs") or {}
+        if not isinstance(etype, str) or etype not in ENTITY_TYPES:
+            raise HTTPException(400, f"Tipo de entidad no válido: {etype}")
+        if not isinstance(val, str) or not val.strip() or len(val) > 4096:
+            raise HTTPException(400, "Valor de entidad vacío o demasiado largo")
+        if not isinstance(attrs, dict):
+            raise HTTPException(400, "Atributos de entidad no válidos")
+        orig_id = e.get("id") if isinstance(e.get("id"), str) else None
+        validated_entities.append((etype, val, attrs, bool(e.get("root", False)), bool(e.get("pivot", True)), orig_id))
+
+    with db.batch():
+        case_name = str(src_case.get("name") or "Importado").strip()[:120] or "Importado"
+        case = db.create_case(case_name + " (importado)")
+        id_map: dict[str, str] = {}
+        valid_ids: set[str] = set()
+        for etype, val, attrs, is_root, is_pivot, orig_id in validated_entities:
+            ent, _ = db.upsert_entity(case["id"], etype, val, attrs, root=is_root, pivot=is_pivot)
+            valid_ids.add(ent["id"])
+            id_map[ent["id"]] = ent["id"]
+            if orig_id:
+                id_map[orig_id] = ent["id"]
+
+        for ed in raw_edges:
+            if not isinstance(ed, dict):
+                raise HTTPException(400, "Arista mal formada en el archivo")
+            raw_src = ed.get("src")
+            raw_dst = ed.get("dst")
+            if not isinstance(raw_src, str) or not isinstance(raw_dst, str):
+                raise HTTPException(400, "Arista con identificadores no válidos")
+            src = id_map.get(raw_src)
+            dst = id_map.get(raw_dst)
+            if not src or not dst or src not in valid_ids or dst not in valid_ids:
+                raise HTTPException(400, "Arista apunta a una entidad inexistente en el caso")
+            if src == dst:
+                continue
+            label = " ".join(str(ed.get("label") or "relacionado").split())[:60] or "relacionado"
+            source = str(ed.get("source") or "import").strip()[:60] or "import"
+            db.add_edge(case["id"], src, dst, label, source)
+
+        if isinstance(src_case.get("notes"), str) and src_case["notes"]:
+            db.update_case(case["id"], notes=src_case["notes"][:200000])
+        if isinstance(src_case.get("layout"), dict):
+            db.update_case(case["id"], layout=src_case["layout"])
     return case
 
 

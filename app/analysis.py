@@ -101,14 +101,15 @@ async def photo_match(engine, job) -> None:
             if dist <= 6:
                 pairs.append((a, b, dist))
     new = 0
-    for a, b, dist in pairs:
-        if db.add_edge(job.case_id, a["id"], b["id"], PHOTO_REL, "photo_match"):
-            new += 1
-            job.emit({"type": "edge", "edge": {"src": a["id"], "dst": b["id"], "label": PHOTO_REL, "source": "photo_match"}})
-        sim = round(100 - dist * 100 / 64)
-        for x, y in ((a, b), (b, a)):
-            ent = db.update_attrs(job.case_id, x["id"], {"Foto coincide con": [f"{y['label']} ({sim}%)"]})
-            _emit_entity(job, ent)
+    with db.batch():
+        for a, b, dist in pairs:
+            if db.add_edge(job.case_id, a["id"], b["id"], PHOTO_REL, "photo_match"):
+                new += 1
+                job.emit({"type": "edge", "edge": {"src": a["id"], "dst": b["id"], "label": PHOTO_REL, "source": "photo_match"}})
+            sim = round(100 - dist * 100 / 64)
+            for x, y in ((a, b), (b, a)):
+                ent = db.update_attrs(job.case_id, x["id"], {"Foto coincide con": [f"{y['label']} ({sim}%)"]})
+                _emit_entity(job, ent)
     if todo or new:
         _record(job, "photo_match", "ok" if pairs else "empty",
                 f"{len(hashed)} fotos comparadas · {len(pairs)} coincidencias" + (f" ({new} nuevas)" if new else ""),
@@ -167,15 +168,16 @@ def score_identities(job) -> int:
             scores[a["id"]], reasons[a["id"]] = _score_account(a, ents, adj, names, ref_tokens, linked_from, scores, marks)
 
     changed = 0
-    for a in accounts:
-        at = a["attrs"]
-        score, why = scores[a["id"]], reasons[a["id"]]
-        level = "Alta" if score >= 70 else "Media" if score >= 40 else "Baja"
-        if at.get("Confianza") != score or at.get("Señales") != why:
-            ent = db.update_attrs(job.case_id, a["id"], {"Confianza": score, "Nivel de confianza": level, "Señales": why},
-                                  replace=True)
-            _emit_entity(job, ent)
-            changed += 1
+    with db.batch():
+        for a in accounts:
+            at = a["attrs"]
+            score, why = scores[a["id"]], reasons[a["id"]]
+            level = "Alta" if score >= 70 else "Media" if score >= 40 else "Baja"
+            if at.get("Confianza") != score or at.get("Señales") != why:
+                ent = db.update_attrs(job.case_id, a["id"], {"Confianza": score, "Nivel de confianza": level, "Señales": why},
+                                      replace=True)
+                _emit_entity(job, ent)
+                changed += 1
     return changed
 
 
