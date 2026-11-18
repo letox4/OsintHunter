@@ -22,11 +22,24 @@ const link = (url, text) => {
   return u ? `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(text ?? u)}</a>` : esc(text ?? url);
 };
 
+function getSessionToken() {
+  const meta = document.querySelector('meta[name="osint-token"]')?.content;
+  if (meta) return meta;
+  const m = document.cookie.match(/(?:^|;\s*)osint_token=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
 async function api(path, opts = {}) {
   const isForm = opts.body instanceof FormData;
+  const token = getSessionToken();
+  const headers = {
+    ...(opts.body && !isForm ? { "Content-Type": "application/json" } : {}),
+    ...(token ? { "X-Osint-Token": token } : {}),
+    ...(opts.headers || {}),
+  };
   const res = await fetch(path, {
     ...opts,
-    headers: opts.body && !isForm ? { "Content-Type": "application/json" } : {},
+    headers,
     body: opts.body && !isForm ? JSON.stringify(opts.body) : opts.body,
   });
   if (!res.ok) {

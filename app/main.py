@@ -1,9 +1,12 @@
 import json
+import secrets
 import time
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -16,6 +19,21 @@ from .models import ENTITY_TYPES, detect_type
 from .modules import REGISTRY
 from .modules.username import PROFILE_URLS as MANUAL_PROFILE_URLS
 
+SESSION_TOKEN = secrets.token_urlsafe(32)
+STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _validate_ai_base_url(url: str) -> str:
+    val = (url or "").strip()
+    if not val:
+        return ""
+    if any(c.isspace() for c in val):
+        raise HTTPException(400, "URL base de IA no válida")
+    parsed = urlparse(val)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(400, "URL base de IA no válida: solo se permiten esquemas http o https")
+    return val
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -25,6 +43,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="OsintHunter", lifespan=lifespan)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"], www_redirect=False)
 
 
 class CaseIn(BaseModel):
@@ -122,7 +141,12 @@ def get_settings():
 
 @app.put("/api/settings")
 def put_settings(body: dict):
-    settings.update(dict(body))
+    changes = dict(body)
+    if "ai_base_url" in changes:
+        if not isinstance(changes["ai_base_url"], str):
+            raise HTTPException(400, "URL base de IA no válida")
+        changes["ai_base_url"] = _validate_ai_base_url(changes["ai_base_url"])
+    settings.update(changes)
     return settings.public()
 
 
@@ -352,11 +376,19 @@ def index():
     for asset in ("app.js", "style.css", "i18n.js", "i18n-en.js"):
         version = int((WEB_DIR / asset).stat().st_mtime)
         html = html.replace(f'"{asset}"', f'"{asset}?v={version}"')
-    return Response(html, media_type="text/html", headers={"Cache-Control": "no-cache"})
+    meta_tag = f'  <meta name="osint-token" content="{SESSION_TOKEN}">\n</head>'
+    html = html.replace("</head>", meta_tag, 1)
+    resp = Response(html, media_type="text/html", headers={"Cache-Control": "no-cache"})
+    resp.set_cookie("osint_token", SESSION_TOKEN, samesite="strict", httponly=False, path="/")
+    return resp
 
 
 @app.middleware("http")
-async def revalidate_static(request, call_next):
+async def revalidate_static(request: Request, call_next):
+    if request.url.path.startswith("/api/") and request.method in STATE_CHANGING_METHODS:
+        token = request.headers.get("x-osint-token") or ""
+        if not token or not secrets.compare_digest(token, SESSION_TOKEN):
+            return JSONResponse({"detail": "Token de sesión no válido o ausente"}, status_code=403)
     response = await call_next(request)
     if not request.url.path.startswith(("/api/", "/vendor/")):
         response.headers.setdefault("Cache-Control", "no-cache")

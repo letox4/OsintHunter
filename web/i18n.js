@@ -153,7 +153,12 @@ const I18N = (() => {
   async function setLang(l) {
     localStorage.setItem("osint-lang", l);
     try {
-      await fetch("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lang: l }) });
+      const token = document.querySelector('meta[name="osint-token"]')?.content || "";
+      await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(token ? { "X-Osint-Token": token } : {}) },
+        body: JSON.stringify({ lang: l }),
+      });
     } catch { /* el idioma de la IA se sincroniza la próxima vez */ }
     location.reload();
   }
