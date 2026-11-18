@@ -34,12 +34,21 @@ class Job:
         self.events: list[dict] = []
         self.created: list[str] = []
         self.done = False
+        self.cancelled = False
         self._new = asyncio.Event()
         self.task: asyncio.Task | None = None
 
     def emit(self, event: dict) -> None:
         self.events.append(event)
         self._new.set()
+
+    def cancel(self) -> bool:
+        if self.done:
+            return False
+        self.cancelled = True
+        if self.task and not self.task.done():
+            self.task.cancel()
+        return True
 
     def finish(self) -> None:
         self.done = True
@@ -174,21 +183,45 @@ class Engine:
         job.task = asyncio.create_task(self._batch(job, REGISTRY[module]))
         return job
 
+    def cancel_job(self, job_id: str) -> bool:
+        job = self.jobs.get(job_id)
+        if not job:
+            return False
+        return job.cancel()
+
+    async def _gather_CancelSafe(self, coros) -> list:
+        tasks = [asyncio.create_task(c) for c in coros]
+        if not tasks:
+            return []
+        try:
+            return list(await asyncio.gather(*tasks))
+        except asyncio.CancelledError:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
     async def _batch(self, job: Job, m: Module) -> None:
         """Pasa un módulo por todas las entidades del caso a las que aplica y que aún no lo tienen; luego reanaliza."""
         from . import analysis
 
+        ents: list[dict] = []
         try:
             ents = [e for e in db.entities_without_run(job.case_id, m.name) if m.applies(e)]
+            if ents:
+                job.emit({"type": "scan_plan", "total": len(ents)})
             sem = asyncio.Semaphore(8)
 
             async def one(e):
                 async with sem:
                     await self._run_module(job, e, m)
 
-            await asyncio.gather(*(one(e) for e in ents))
+            await self._gather_CancelSafe([one(e) for e in ents])
             await analysis.run(self, job, use_ai=False)
             job.emit({"type": "done", "scanned": len(ents)})
+        except asyncio.CancelledError:
+            job.emit({"type": "cancelled", "scanned": len(ents)})
         except Exception as e:  # noqa: BLE001
             log.error("batch failed: %s", traceback.format_exc())
             job.emit({"type": "error", "message": str(e)})
@@ -205,8 +238,11 @@ class Engine:
         from . import analysis
 
         try:
+            job.emit({"type": "scan_plan", "total": 2 if use_ai else 1})
             await analysis.run(self, job, use_ai=use_ai)
             job.emit({"type": "done", "scanned": 0, "analysis": True})
+        except asyncio.CancelledError:
+            job.emit({"type": "cancelled", "scanned": 0, "analysis": True})
         except Exception as e:  # noqa: BLE001
             log.error("analysis failed: %s", traceback.format_exc())
             job.emit({"type": "error", "message": str(e)})
@@ -222,27 +258,28 @@ class Engine:
             pending = [eid for eid in job.created if eid not in done]
             if not pending:
                 return
-            tasks = []
+            coros = []
             for eid in pending:
                 done.add(eid)
                 ent = db.get_entity(job.case_id, eid)
                 if not ent:
                     continue
-                tasks += [self._run_module(job, ent, m) for m in auto if m.applies(ent)]
-            if tasks:
-                await asyncio.gather(*tasks)
+                coros += [self._run_module(job, ent, m) for m in auto if m.applies(ent)]
+            if coros:
+                job.emit({"type": "scan_plan", "total": len(coros)})
+                await self._gather_CancelSafe(coros)
 
     async def _scan(self, job: Job, entity_id: str, modules: list[str] | None, depth: int) -> None:
+        seen = {entity_id}
         try:
             limit = int(settings.get("max_pivot_entities", 25))
             queue: list[tuple[str, int]] = [(entity_id, 0)]
-            seen = {entity_id}
             while queue:
                 # cada nivel se procesa en paralelo
                 level = queue
                 queue = []
-                results = await asyncio.gather(
-                    *(self._scan_entity(job, eid, modules if d == 0 else None, rerun=d == 0) for eid, d in level)
+                results = await self._gather_CancelSafe(
+                    [self._scan_entity(job, eid, modules if d == 0 else None, rerun=d == 0) for eid, d in level]
                 )
                 for (eid, d), new in zip(level, results):
                     if d >= depth:
@@ -256,6 +293,8 @@ class Engine:
 
             await analysis.run(self, job, use_ai=False)
             job.emit({"type": "done", "scanned": len(seen)})
+        except asyncio.CancelledError:
+            job.emit({"type": "cancelled", "scanned": len(seen)})
         except Exception as e:  # noqa: BLE001
             log.error("scan failed: %s", traceback.format_exc())
             job.emit({"type": "error", "message": str(e)})
@@ -278,7 +317,7 @@ class Engine:
         if not mods:
             return []
         job.emit({"type": "scan_entity", "entity_id": eid, "modules": [m.name for m in mods]})
-        ctxs = await asyncio.gather(*(self._run_module(job, ent, m) for m in mods))
+        ctxs = await self._gather_CancelSafe([self._run_module(job, ent, m) for m in mods])
         new: list[str] = []
         for c in ctxs:
             new.extend(x for x in c.new_pivots if x not in new and x != eid)
@@ -294,6 +333,12 @@ class Engine:
             await asyncio.wait_for(m.run(ctx), m.timeout)
             status = "ok" if (ctx.found or ctx.enriched) else "empty"
             msg = ctx.message or (f"{ctx.found} hallazgos" if ctx.found else ("Datos añadidos" if ctx.enriched else "Sin resultados"))
+        except asyncio.CancelledError:
+            status = "cancelled"
+            msg = "Cancelado" + (f" · {ctx.found} hallazgos parciales" if ctx.found else "")
+            run = db.add_run(job.case_id, ent["id"], m.name, status, msg, ctx.found, started)
+            job.emit({"type": "run", "run": run})
+            raise
         except Skip as e:
             status, msg = "skipped", str(e)
         except asyncio.TimeoutError:

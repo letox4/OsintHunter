@@ -307,6 +307,15 @@ async def job_events(job_id: str):
     return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    job = engine.jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Trabajo no encontrado")
+    cancelled = engine.cancel_job(job_id)
+    return {"ok": True, "cancelled": cancelled}
+
+
 @app.post("/api/cases/{case_id}/image")
 async def upload_image(case_id: int, file: UploadFile = File(...)):
     _case(case_id)
