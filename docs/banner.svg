@@ -36,6 +36,8 @@
     <path d="M32 6v12M32 46v12M6 32h12M46 32h12" stroke="#ff7a1a" stroke-width="4" stroke-linecap="round"/>
   </g>
   <text x="300" y="150" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="78" font-weight="800" fill="url(#txt)">OsintHunter</text>
+  <rect x="752" y="102" width="76" height="32" rx="8" fill="#ff7a1a" fill-opacity=".16" stroke="#ff7a1a" stroke-opacity=".65" stroke-width="1.5"/>
+  <text x="790" y="124" text-anchor="middle" font-family="Consolas, Menlo, monospace" font-size="18" font-weight="700" fill="#ffb066">v1.1</text>
   <text x="304" y="196" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="25" fill="#e8d9c8">The ultimate OSINT toolkit &#183; graph &#183; confidence &#183; reports</text>
   <text x="304" y="234" font-family="Consolas, Menlo, monospace" font-size="18" fill="#ff7a1a" fill-opacity=".8">&gt; username &#183; email &#183; phone &#183; name &#183; domain &#183; IP_</text>
 </svg>
