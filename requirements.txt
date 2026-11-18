@@ -7,3 +7,4 @@ pillow>=10.4
 python-multipart>=0.0.9
 pypdf>=5.0
 olefile>=0.47
+keyring>=25.0

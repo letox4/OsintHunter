@@ -22,6 +22,10 @@ echo Generando OsintHunter.exe (tarda un par de minutos)...
   --collect-submodules dns ^
   --collect-submodules phonenumbers ^
   --collect-submodules pypdf ^
+  --collect-submodules keyring ^
+  --collect-submodules win32ctypes ^
+  --hidden-import keyring.backends.Windows ^
+  --copy-metadata keyring ^
   --collect-submodules app ^
   osinthunter.py || goto :error
 
